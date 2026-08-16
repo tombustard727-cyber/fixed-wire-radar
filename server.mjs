@@ -1,3 +1,4 @@
+
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -73,26 +74,87 @@ async function brave(q,count=10){
   return (j?.web?.results||[]).map(x=>({title:x.title||"",url:x.url||"",description:x.description||"",age:x.age||""}));
 }
 const rx = {
-  fixed:/\b(fixed wire|fixed wiring|fixed electrical|eicr|electrical installation condition report|periodic electrical inspection|periodic inspection(?: and testing)?|electrical inspection and testing)\b/i,
-  tender:/\b(tender|contract award|award notice|procurement|framework|contract notice|supplier|successful bidder)\b/i,
-  due:/\b(due|overdue|expiry|expires|expiring|renewal|renew|end date|contract end|completion date)\b/i,
-  cycle:/\b(annual|annually|1 year|one year|3 year|three year|5 year|five year|triennial|quinquennial)\b/i
+  fixed:/(fixed wire|fixed wiring|fixed electrical|eicr|electrical installation condition report|periodic electrical inspection|periodic inspection(?: and testing)?|electrical inspection and testing|electrical test(?:ing)? and inspection|electrical inspection|electrical testing|periodic testing|electrical compliance testing)/i,
+  tender:/(tender|contract award|award notice|procurement|framework|contract notice|supplier|successful bidder|invitation to tender|itt|request for quotation|rfq)/i,
+  due:/(due|overdue|expiry|expires|expiring|renewal|renew|end date|contract end|completion date|retest|re-test|next test|next inspection)/i,
+  cycle:/(annual|annually|1 year|one year|3 year|three year|5 year|five year|triennial|quinquennial|every three years|every five years)/i,
+  estates:/(estates|facilities|facilities management|property compliance|building compliance|compliance programme|planned maintenance)/i,
+  remedial:/(remedial|remediation|unsatisfactory|c1|c2|fi|observations)/i
 };
 function classifyResult(r){
-  const text=`${r.title}\n${r.description}`;
-  const flags={fixed:rx.fixed.test(text),tender:rx.tender.test(text),due:rx.due.test(text),cycle:rx.cycle.test(text)};
-  let evidenceScore=(flags.fixed?40:0)+(flags.tender?15:0)+(flags.due?20:0)+(flags.cycle?15:0);
-  if(/contractsfinder\.service\.gov\.uk|find-tender\.service\.gov\.uk|\.gov\.uk/i.test(r.url))evidenceScore+=10;
+  const text=`${r.title}
+${r.description}`;
+  const flags={
+    fixed:rx.fixed.test(text),
+    tender:rx.tender.test(text),
+    due:rx.due.test(text),
+    cycle:rx.cycle.test(text),
+    estates:rx.estates.test(text),
+    remedial:rx.remedial.test(text)
+  };
+  let evidenceScore=0;
+  if(flags.fixed)evidenceScore+=38;
+  if(flags.tender)evidenceScore+=16;
+  if(flags.due)evidenceScore+=22;
+  if(flags.cycle)evidenceScore+=14;
+  if(flags.estates)evidenceScore+=8;
+  if(flags.remedial)evidenceScore+=8;
+  if(/contractsfinder\.service\.gov\.uk|find-tender\.service\.gov\.uk|\.gov\.uk|\.ac\.uk/i.test(r.url))evidenceScore+=10;
+  if(/electrical/i.test(text) && /inspection|testing|compliance/i.test(text))evidenceScore+=8;
   return {...r,flags,evidenceScore:Math.min(100,evidenceScore)};
 }
 function inferOpportunity(results){
-  const relevant=results.filter(x=>x.flags.fixed);
-  if(!relevant.length)return {confidence:"NO EVIDENCE",score:0,reason:"No public fixed-wire/EICR evidence found.",evidence:[]};
+  const relevant=results.filter(x =>
+    x.flags.fixed ||
+    (x.flags.estates && /electrical/i.test(x.title+" "+x.description)) ||
+    (x.flags.tender && /electrical/i.test(x.title+" "+x.description))
+  );
+  if(!relevant.length)return {
+    confidence:"NO EVIDENCE",
+    score:0,
+    reason:"No useful public electrical testing / fixed-wire evidence found.",
+    evidence:[]
+  };
+
   let score=Math.max(...relevant.map(x=>x.evidenceScore));
-  let confidence="POSSIBLE",reason="Public evidence mentions fixed-wire/EICR activity.";
-  if(relevant.some(x=>x.flags.fixed&&x.flags.due)){confidence="CONFIRMED";score=Math.max(score,85);reason="Public evidence explicitly combines fixed-wire/EICR with due, expiry or renewal language."}
-  else if(relevant.some(x=>x.flags.fixed&&(x.flags.tender||x.flags.cycle))){confidence="LIKELY";score=Math.max(score,65);reason="Strong procurement or testing-cycle evidence found."}
-  return {confidence,score,reason,evidence:relevant.sort((a,b)=>b.evidenceScore-a.evidenceScore).slice(0,6)};
+  let confidence="POSSIBLE";
+  let reason="Public evidence shows electrical testing, inspection or compliance activity.";
+
+  const explicitDue=relevant.some(x=>x.flags.fixed&&x.flags.due);
+  const tenderSignal=relevant.some(x=>x.flags.fixed&&x.flags.tender);
+  const cycleSignal=relevant.some(x=>x.flags.fixed&&x.flags.cycle);
+  const explicitFixed=relevant.some(x=>x.flags.fixed);
+  const broadElectrical=relevant.some(x =>
+    /electrical/i.test(x.title+" "+x.description) &&
+    /inspection|testing|compliance/i.test(x.title+" "+x.description)
+  );
+
+  if(explicitDue){
+    confidence="CONFIRMED";
+    score=Math.max(score,88);
+    reason="Public evidence explicitly links fixed-wire/EICR/electrical testing with due, expiry, renewal or next-test language.";
+  } else if(tenderSignal || cycleSignal){
+    confidence="LIKELY";
+    score=Math.max(score,68);
+    reason=tenderSignal
+      ? "Public procurement evidence explicitly references fixed-wire/EICR/electrical testing work."
+      : "Public evidence gives a recurring electrical inspection/testing cycle.";
+  } else if(explicitFixed){
+    confidence="POSSIBLE";
+    score=Math.max(score,48);
+    reason="Public evidence explicitly references fixed-wire/EICR/electrical inspection activity, but no buying window is confirmed.";
+  } else if(broadElectrical){
+    confidence="POSSIBLE";
+    score=Math.max(score,35);
+    reason="Public evidence confirms electrical test/inspection/compliance activity; verify whether this includes fixed-wire/EICR and when it is next due.";
+  }
+
+  return {
+    confidence,
+    score:Math.min(100,score),
+    reason,
+    evidence:relevant.sort((a,b)=>b.evidenceScore-a.evidenceScore).slice(0,8)
+  };
 }
 async function scanCompany(company, force=false){
   const cache=readCache(),key=company.id||company.name;
@@ -100,9 +162,13 @@ async function scanCompany(company, force=false){
   const n=`"${company.name.replace(/"/g,"")}"`;
   const queries=[
     `${n} ("fixed wire" OR "fixed wiring" OR EICR)`,
-    `${n} ("electrical inspection" OR "periodic inspection") (contract OR tender OR due OR expiry)`,
-    `${n} (EICR OR "fixed wire") (tender OR contract OR procurement)`,
-    `${n} filetype:pdf (EICR OR "fixed wire" OR "electrical inspection")`
+    `${n} ("electrical inspection" OR "electrical testing" OR "test and inspection")`,
+    `${n} ("periodic inspection" OR "periodic testing" OR "electrical compliance")`,
+    `${n} (EICR OR "fixed wire" OR "electrical inspection") (tender OR contract OR procurement OR framework)`,
+    `${n} (electrical OR EICR) (expiry OR renewal OR "end date" OR "next test" OR due)`,
+    `${n} site:contractsfinder.service.gov.uk (EICR OR "fixed wire" OR "electrical testing")`,
+    `${n} site:find-tender.service.gov.uk (EICR OR "fixed wire" OR "electrical testing")`,
+    `${n} filetype:pdf (EICR OR "fixed wire" OR "electrical inspection" OR "electrical testing")`
   ];
   let batches=[];
   for(const q of queries){ try{batches.push(...await brave(q,8))}catch{} }
