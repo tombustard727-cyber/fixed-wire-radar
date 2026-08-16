@@ -1,1 +1,162 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fixed Wire Radar</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Arial;background:#f4f6f7;color:#18242d}
+.top{background:#142630;color:white;padding:20px}
+.wrap{max-width:1200px;margin:auto;padding:18px}
+button{border:0;border-radius:8px;padding:11px 14px;font-weight:800;margin:3px;cursor:pointer}
+.primary{background:#176849;color:white}
+.secondary{background:#e6ecef;color:#21333d}
+.card{background:white;border:1px solid #dce3e7;border-radius:12px;padding:14px;margin:10px 0}
+.badge{display:inline-block;border-radius:99px;padding:4px 8px;font-size:11px;font-weight:900}
+.CONFIRMED{background:#fee5e2;color:#a82b22}
+.LIKELY{background:#fff0ca;color:#8b6100}
+.POSSIBLE{background:#dff3e8;color:#126344}
+.NOEVIDENCE{background:#e8edf0;color:#627079}
+.muted{color:#687680}
+.score{font-size:24px;font-weight:900}
+a{color:#165f97}
+#status{font-size:13px;color:#c9d4d9}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+.evidence{font-size:13px}
+.evidence div{margin-top:7px}
+.searchbox{display:flex;gap:8px;flex-wrap:wrap}
+.searchbox input{flex:1;min-width:240px;border:1px solid #ccd6dc;border-radius:8px;padding:12px;font:inherit}
+h2,h3{margin-top:0}
+.note{font-size:13px;color:#687680}
+</style>
+</head>
+<body>
+<div class="top">
+  <h2 style="margin:0">Fixed Wire Radar</h2>
+  <div id="status">Checking connection…</div>
+</div>
 
+<div class="wrap">
+  <div class="card">
+    <h3>Search any company now</h3>
+    <p class="note">Type a company, site, school, care group, hotel, university, council or other organisation. The scanner will search the public web for fixed-wire / EICR evidence.</p>
+    <div class="searchbox">
+      <input id="manualName" placeholder="Example: University of Leeds">
+      <input id="manualLocation" placeholder="Optional location, e.g. Leeds">
+      <button class="primary" onclick="manualScan()">Scan internet</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Attio search</h3>
+    <p class="note">When Attio is connected, this will load your companies automatically.</p>
+    <button class="primary" onclick="loadCompanies()">Load Attio companies</button>
+    <button class="secondary" onclick="scanAll()">Scan first 25</button>
+  </div>
+
+  <div id="msg" class="card muted">Ready.</div>
+  <div id="results" class="grid"></div>
+</div>
+
+<script>
+let companies=[],data=[];
+
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({
+  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+}[c]));
+
+async function health(){
+  try{
+    let j=await(await fetch("/api/health")).json();
+    status.innerHTML=`Attio ${j.attio?"✓":"✕"} &nbsp; Web search ${j.search?"✓":"✕"}`
+  }catch{
+    status.innerText="Server unavailable"
+  }
+}
+
+async function manualScan(){
+  const name=document.getElementById("manualName").value.trim();
+  const location=document.getElementById("manualLocation").value.trim();
+  if(!name){msg.innerText="Type a company name first.";return}
+  const company={
+    id:"manual-"+Date.now(),
+    name,
+    location,
+    domain:"",
+    phone:"",
+    attioUrl:""
+  };
+  msg.innerText=`Scanning the internet for ${name}…`;
+  try{
+    let r=await fetch("/api/scan",{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({company,force:true})
+    });
+    let j=await r.json();
+    if(!r.ok)throw Error(j.error||"Search failed");
+    data.unshift(j.data);
+    render();
+    msg.innerText=`Finished scanning ${name}.`;
+  }catch(e){
+    msg.innerText=`Search failed: ${e.message}`;
+  }
+}
+
+async function loadCompanies(){
+  msg.innerText="Loading Attio…";
+  try{
+    let r=await fetch("/api/companies"),j=await r.json();
+    if(!r.ok)throw Error(j.error);
+    companies=j.data;
+    msg.innerText=`${companies.length} companies loaded. Press Scan first 25.`
+  }catch(e){
+    msg.innerText=`Attio is not connected yet: ${e.message}`;
+  }
+}
+
+async function scanAll(){
+  if(!companies.length){msg.innerText="Load Attio companies first.";return}
+  data=[];
+  for(let i=0;i<Math.min(25,companies.length);i++){
+    msg.innerText=`Scanning ${i+1} of ${Math.min(25,companies.length)}: ${companies[i].name}`;
+    let r=await fetch("/api/scan",{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({company:companies[i]})
+    });
+    let j=await r.json();
+    if(r.ok){data.push(j.data);render()}
+  }
+  msg.innerText="Scan finished.";
+}
+
+function render(){
+  data.sort((a,b)=>b.score-a.score);
+  results.innerHTML=data.map(x=>`
+    <div class="card">
+      <span class="score">${x.score}</span>
+      <span class="badge ${x.confidence.replace(/\s/g,'')}">${x.confidence}</span>
+      <h3>${esc(x.company.name)}</h3>
+      ${x.company.location?`<div class="muted">${esc(x.company.location)}</div>`:""}
+      <p>${esc(x.reason)}</p>
+      <div class="evidence">
+        ${x.evidence.slice(0,4).map(e=>`
+          <div>
+            <a target="_blank" href="${esc(e.url)}">${esc(e.title)}</a><br>
+            <span class="muted">${esc(e.description).slice(0,240)}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `).join("")
+}
+
+document.getElementById("manualName").addEventListener("keydown",e=>{
+  if(e.key==="Enter")manualScan();
+});
+
+health();
+</script>
+</body>
+</html>
