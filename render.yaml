@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: fixed-wire-radar
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: ATTIO_TOKEN
+        sync: false
+      - key: BRAVE_API_KEY
+        sync: false

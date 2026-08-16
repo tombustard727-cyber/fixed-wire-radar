@@ -1,0 +1,22 @@
+FIXED WIRE RADAR — RENDER DEPLOYMENT
+
+1. Create a free GitHub account if you do not already have one.
+2. Create a new GitHub repository called fixed-wire-radar.
+3. Upload the CONTENTS of this ZIP to that repository.
+4. Go to Render.com and create/sign in to an account.
+5. Choose New > Blueprint.
+6. Connect the GitHub repository you just created.
+7. Render will detect render.yaml automatically.
+8. When asked for environment variables, add:
+   ATTIO_TOKEN = your Attio API access token
+   BRAVE_API_KEY = your Brave Search API key
+9. Deploy.
+10. Render will give you a public web address ending in .onrender.com.
+11. Open that address on your iPhone.
+
+DO NOT put either API key into GitHub files or send them in chat.
+
+Once deployed:
+- Tap Load Attio companies.
+- Tap Scan first 25.
+- Highest-scoring public EICR/fixed-wire evidence appears first.
